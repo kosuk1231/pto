@@ -42,25 +42,33 @@ function writeAll(p) {
   var leave = p.leave || [], flex = p.flex || [], caps = p.caps || {}, profile = p.profile || {};
 
   var ls = sheet(SHEETS.leave);
-  ls.clearContents();
+  ls.clear();
   ls.getRange(1, 1, 1, 6).setValues([["날짜", "종류", "일수", "시간", "비고", "id"]]);
   if (leave.length) {
-    ls.getRange(2, 1, leave.length, 6).setValues(leave.map(function (r) {
-      return [r.date, TYPE_LABEL[r.type] || r.type, r.days, (r.days || 0) * 8, r.note || "", r.id];
+    var lr = ls.getRange(2, 1, leave.length, 6);
+    lr.setNumberFormat("@");  // 전체 텍스트 형식 → 날짜 자동변환 방지
+    lr.setValues(leave.map(function (r) {
+      return [txt(r.date), TYPE_LABEL[r.type] || r.type, r.days, (r.days || 0) * 8, r.note || "", r.id];
     }));
   }
 
   var fs = sheet(SHEETS.flex);
-  fs.clearContents();
-  fs.getRange(1, 1, 1, 8).setValues([["날짜", "구분", "부터", "까지", "소요시간", "사유", "분", "id"]]);
+  fs.clear();
+  fs.getRange(1, 1, 1, 9).setValues([["날짜", "구분", "부터", "까지", "소요시간", "사유", "분", "id", "차감정보"]]);
   if (flex.length) {
-    fs.getRange(2, 1, flex.length, 8).setValues(flex.map(function (r) {
-      return [r.date, r.kind, r.from || "", r.to || "", hm(r.min || 0), r.reason || "", r.min || 0, r.id];
+    var fr = fs.getRange(2, 1, flex.length, 9);
+    fr.setNumberFormat("@");  // 텍스트 형식 강제
+    fr.setValues(flex.map(function (r) {
+      var mins = r.min || 0;
+      if (r.kind === "사용" && r.links && r.links.length) {
+        mins = r.links.reduce(function (a, l) { return a + (l.min || 0); }, 0);
+      }
+      return [txt(r.date), r.kind, txt(r.from || ""), txt(r.to || ""), txt(hm(mins)), r.reason || "", mins, r.id, r.links ? JSON.stringify(r.links) : ""];
     }));
   }
 
   var cs = sheet(SHEETS.config);
-  cs.clearContents();
+  cs.clear();
   cs.getRange(1, 1, 6, 2).setValues([
     ["항목", "값"],
     ["이름", profile.name || ""],
@@ -90,8 +98,10 @@ function readAll() {
     var fv = fs.getDataRange().getValues();
     for (var j = 1; j < fv.length; j++) {
       var f = fv[j];
-      if (!f[0]) continue;
-      out.flex.push({ id: String(f[7] || "F" + j), date: fmtDate(f[0]), kind: String(f[1] || "적립"), from: fmtTime(f[2]), to: fmtTime(f[3]), min: Number(f[6]) || 0, reason: String(f[5] || "") });
+      if (f[0] === "" && f[5] === "") continue;
+      var rec = { id: String(f[7] || "F" + j), date: fmtDate(f[0]), kind: String(f[1] || "적립"), from: fmtTime(f[2]), to: fmtTime(f[3]), min: Number(f[6]) || 0, reason: String(f[5] || "") };
+      if (f[8]) { try { rec.links = JSON.parse(f[8]); } catch (e) {} }
+      out.flex.push(rec);
     }
   }
 
@@ -120,11 +130,21 @@ function hm(n) {
   var a = Math.abs(n), h = Math.floor(a / 60), m = a % 60;
   return (n < 0 ? "-" : "") + h + ":" + ("0" + m).slice(-2);
 }
+/* 셀에 텍스트로 강제 저장(날짜 자동변환 방지) */
+function txt(v) {
+  return v == null || v === "" ? "" : "'" + String(v);
+}
 function fmtDate(v) {
   if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
-  return String(v || "");
+  var s = String(v == null ? "" : v).replace(/^'/, "").trim();
+  var m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2);
+  return s;
 }
 function fmtTime(v) {
   if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), "HH:mm");
-  return String(v || "");
+  var s = String(v == null ? "" : v).replace(/^'/, "").trim();
+  var m = s.match(/(\d{1,2}):(\d{2})/);
+  if (m) return ("0" + m[1]).slice(-2) + ":" + m[2];
+  return "";
 }

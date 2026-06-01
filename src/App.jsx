@@ -66,8 +66,9 @@ const diffMin = (f, t) => {
 };
 const fmtDate = (iso) => {
   if (!iso) return "";
-  const [, m, d] = iso.split("-");
-  return `${Number(m)}/${Number(d)}`;
+  const m = String(iso).match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return `${Number(m[2])}/${Number(m[3])}`;
+  return ""; // 깨진 값은 빈칸 처리(저장 시 정리됨)
 };
 const todayISO = () => {
   const d = new Date();
@@ -173,8 +174,20 @@ export default function App() {
     return o;
   }, [data.leave]);
 
+  // 발생(적립) 총합, 사용 총합 — 사용은 links 합으로 계산(없으면 min 폴백)
   const flexAcc = useMemo(() => data.flex.filter((f) => f.kind === "적립").reduce((s, f) => s + (f.min || 0), 0), [data.flex]);
-  const flexUse = useMemo(() => data.flex.filter((f) => f.kind === "사용").reduce((s, f) => s + (f.min || 0), 0), [data.flex]);
+  const usedMap = useMemo(() => {
+    const m = {};
+    data.flex.forEach((f) => {
+      if (f.kind !== "사용") return;
+      (f.links || []).forEach((l) => { m[l.id] = (m[l.id] || 0) + (l.min || 0); });
+    });
+    return m;
+  }, [data.flex]);
+  const flexUse = useMemo(
+    () => data.flex.filter((f) => f.kind === "사용").reduce((s, f) => s + ((f.links ? f.links.reduce((a, l) => a + (l.min || 0), 0) : f.min) || 0), 0),
+    [data.flex]
+  );
   const flexBal = flexAcc - flexUse;
 
   const addLeave = (rec) => setData((d) => ({ ...d, leave: [...d.leave, { id: uid(), ...rec }].sort(sortByDate) }));
@@ -205,7 +218,7 @@ export default function App() {
       {tab === "leave" ? (
         <LeaveSection data={data} usedByType={usedByType} addLeave={addLeave} delLeave={delLeave} />
       ) : (
-        <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} />
+        <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} usedMap={usedMap} />
       )}
 
       <Footer onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }} />
@@ -428,7 +441,7 @@ function LeaveSection({ data, usedByType, addLeave, delLeave }) {
 }
 
 /* ============================ 탄력 섹션 ============================ */
-function FlexSection({ data, addFlex, delFlex, bal }) {
+function FlexSection({ data, addFlex, delFlex, bal, usedMap }) {
   const [kind, setKind] = useState("적립");
   const [date, setDate] = useState(todayISO());
   const [reason, setReason] = useState("");
@@ -436,15 +449,57 @@ function FlexSection({ data, addFlex, delFlex, bal }) {
   const [to, setTo] = useState("");
   const autoMin = diffMin(from, to);
 
-  const submit = () => {
+  // 사용 모드: 선택한 발생들과 사용 시간
+  const [selected, setSelected] = useState([]); // 발생 id 배열(선택 순서 유지)
+  const [useMin, setUseMin] = useState(""); // 분, 비우면 선택 잔여 전부
+
+  // 발생별 잔여(분)
+  const remainOf = (f) => (f.min || 0) - (usedMap[f.id] || 0);
+  const earns = [...data.flex].filter((f) => f.kind === "적립").sort(sortByDate);
+  const openEarns = earns.filter((f) => remainOf(f) > 0);
+
+  const selectedRemain = selected.reduce((s, id) => {
+    const f = earns.find((e) => e.id === id);
+    return s + (f ? remainOf(f) : 0);
+  }, 0);
+
+  const toggleSel = (id) =>
+    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+
+  const submitEarn = () => {
     if (!date || autoMin <= 0) return;
-    addFlex({ kind, date, reason: reason.trim(), from, to, min: autoMin });
+    addFlex({ kind: "적립", date, reason: reason.trim(), from, to, min: autoMin });
     setReason(""); setFrom(""); setTo("");
   };
 
+  const submitUse = () => {
+    if (!date || selected.length === 0) return;
+    let want = useMin === "" ? selectedRemain : Math.round(Number(useMin) || 0);
+    if (want <= 0) return;
+    want = Math.min(want, selectedRemain); // 잔여 초과 방지
+    // 선택 순서대로 차감
+    const links = [];
+    let left = want;
+    for (const id of selected) {
+      if (left <= 0) break;
+      const f = earns.find((e) => e.id === id);
+      if (!f) continue;
+      const take = Math.min(remainOf(f), left);
+      if (take > 0) { links.push({ id, min: take }); left -= take; }
+    }
+    if (links.length === 0) return;
+    addFlex({ kind: "사용", date, reason: reason.trim(), links, min: want - left });
+    setReason(""); setSelected([]); setUseMin("");
+  };
+
+  // 목록(누적 잔여 표시)
   const ordered = [...data.flex].sort(sortByDate);
   let run = 0;
-  const withRun = ordered.map((f) => { run += f.kind === "적립" ? f.min : -f.min; return { ...f, run }; });
+  const withRun = ordered.map((f) => {
+    const amt = f.kind === "적립" ? f.min : (f.links ? f.links.reduce((a, l) => a + (l.min || 0), 0) : f.min);
+    run += f.kind === "적립" ? amt : -amt;
+    return { ...f, _amt: amt, run };
+  });
 
   return (
     <div>
@@ -453,22 +508,40 @@ function FlexSection({ data, addFlex, delFlex, bal }) {
           <Field label="구분">
             <div className="lm-chiprow" style={{ display: "flex", gap: 5 }}>
               {["적립", "사용"].map((k) => (
-                <button key={k} onClick={() => setKind(k)} style={{ ...chip, ...(kind === k ? { ...chipOn, background: k === "적립" ? C.green : C.clay } : {}) }}>
+                <button key={k} onClick={() => { setKind(k); }} style={{ ...chip, ...(kind === k ? { ...chipOn, background: k === "적립" ? C.green : C.clay } : {}) }}>
                   {k === "적립" ? "＋ 발생" : "－ 사용"}
                 </button>
               ))}
             </div>
           </Field>
           <Field label={kind === "적립" ? "발생일" : "사용일"}><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={selStyle} /></Field>
-          <Field label="부터"><input type="time" value={from} onChange={(e) => setFrom(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
-          <Field label="까지"><input type="time" value={to} onChange={(e) => setTo(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
-          <Field label="소요시간"><div className="lm-fill" style={{ ...selStyle, minWidth: 64, fontFamily: SERIF, fontWeight: 700, color: autoMin > 0 ? C.ink : C.sub, background: "#F7F3EA" }}>{autoMin > 0 ? minToHM(autoMin) : "0:00"}</div></Field>
-          <Field label="사유" grow><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 회장단 회의 / 권익옹호위원회 정기회의" style={{ ...selStyle, width: "100%" }} /></Field>
-          <button className="lm-add" onClick={submit} style={{ ...addBtn, background: kind === "적립" ? C.green : C.clay }}>＋ 등록</button>
+
+          {kind === "적립" ? (
+            <>
+              <Field label="부터"><input type="time" value={from} onChange={(e) => setFrom(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
+              <Field label="까지"><input type="time" value={to} onChange={(e) => setTo(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
+              <Field label="소요시간"><div className="lm-fill" style={{ ...selStyle, minWidth: 64, fontFamily: SERIF, fontWeight: 700, color: autoMin > 0 ? C.ink : C.sub, background: "#F7F3EA" }}>{autoMin > 0 ? minToHM(autoMin) : "0:00"}</div></Field>
+              <Field label="사유" grow><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 회장단 회의 / 권익옹호위원회 정기회의" style={{ ...selStyle, width: "100%" }} /></Field>
+              <button className="lm-add" onClick={submitEarn} style={{ ...addBtn, background: C.green }}>＋ 등록</button>
+            </>
+          ) : (
+            <>
+              <Field label="사용시간">
+                <input type="number" step="30" min="0" placeholder={selectedRemain ? `전부(${minToHM(selectedRemain)})` : "분"} value={useMin} onChange={(e) => setUseMin(e.target.value)} style={{ ...selStyle, width: 130 }} />
+              </Field>
+              <Field label="사유" grow><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 늦은 출근 / 이른 퇴근" style={{ ...selStyle, width: "100%" }} /></Field>
+              <button className="lm-add" onClick={submitUse} style={{ ...addBtn, background: C.clay, opacity: selected.length ? 1 : 0.5 }}>－ 정산</button>
+            </>
+          )}
         </div>
-        <p style={{ margin: "10px 2px 0", fontSize: 11, color: C.sub }}>
-          현재 잔여 <b style={{ color: bal >= 0 ? C.green : C.clay }}>{minToHM(bal)}</b> ({minToText(bal)}). 회의·촬영 등 초과근무는 ‘발생’, 늦은 출근·이른 퇴근은 ‘사용’.
-        </p>
+
+        {kind === "적립" ? (
+          <p style={{ margin: "10px 2px 0", fontSize: 11, color: C.sub }}>
+            현재 잔여 <b style={{ color: bal >= 0 ? C.green : C.clay }}>{minToHM(bal)}</b> ({minToText(bal)}). 회의·촬영 등 초과근무는 ‘발생’으로 적립합니다.
+          </p>
+        ) : (
+          <UsePicker openEarns={openEarns} remainOf={remainOf} selected={selected} toggleSel={toggleSel} selectedRemain={selectedRemain} useMin={useMin} />
+        )}
       </div>
 
       <div style={{ marginTop: 16 }}>
@@ -482,22 +555,64 @@ function FlexSection({ data, addFlex, delFlex, bal }) {
               <span style={{ width: 64, textAlign: "right" }}>잔여</span>
               <span style={{ width: 24 }} />
             </div>
-            {[...withRun].reverse().map((f) => (
-              <div key={f.id} className="lm-row">
-                <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(f.date)}</span>
-                <span style={{ minWidth: 50, textAlign: "center", fontSize: 11, fontWeight: 700, color: f.kind === "적립" ? C.green : C.clay }}>{f.kind === "적립" ? "＋적립" : "－사용"}</span>
-                <span style={{ minWidth: 88, fontSize: 12, color: C.sub }}>
-                  <b style={{ fontFamily: SERIF, color: C.ink }}>{minToHM(f.min)}</b>
-                  {f.from && <span className="lm-hidemob" style={{ fontSize: 10, marginLeft: 5 }}>{f.from}~{f.to}</span>}
-                </span>
-                <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{f.reason}</span>
-                <span style={{ minWidth: 56, marginLeft: "auto", textAlign: "right", fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: f.run < 0 ? C.clay : C.ink }}>{minToHM(f.run)}</span>
-                <button onClick={() => delFlex(f.id)} style={delBtn}>✕</button>
-              </div>
-            ))}
+            {[...withRun].reverse().map((f) => {
+              const isEarn = f.kind === "적립";
+              const rem = isEarn ? remainOf(f) : null;
+              return (
+                <div key={f.id} className="lm-row">
+                  <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(f.date)}</span>
+                  <span style={{ minWidth: 50, textAlign: "center", fontSize: 11, fontWeight: 700, color: isEarn ? C.green : C.clay }}>{isEarn ? "＋적립" : "－사용"}</span>
+                  <span style={{ minWidth: 88, fontSize: 12, color: C.sub }}>
+                    <b style={{ fontFamily: SERIF, color: C.ink }}>{minToHM(f._amt)}</b>
+                    {isEarn && f.from && <span className="lm-hidemob" style={{ fontSize: 10, marginLeft: 5 }}>{f.from}~{f.to}</span>}
+                    {isEarn && rem < f.min && <span style={{ fontSize: 10, marginLeft: 5, color: rem > 0 ? C.green : C.sub }}>잔여 {minToHM(rem)}</span>}
+                  </span>
+                  <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{f.reason}</span>
+                  <span style={{ minWidth: 56, marginLeft: "auto", textAlign: "right", fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: f.run < 0 ? C.clay : C.ink }}>{minToHM(f.run)}</span>
+                  <button onClick={() => delFlex(f.id)} style={delBtn}>✕</button>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function UsePicker({ openEarns, remainOf, selected, toggleSel, selectedRemain, useMin }) {
+  const want = useMin === "" ? selectedRemain : Math.min(Math.round(Number(useMin) || 0), selectedRemain);
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ fontSize: 11.5, color: C.sub, marginBottom: 7 }}>
+        차감할 <b style={{ color: C.green }}>발생 내역</b>을 선택하세요(여러 개 가능, 선택 순서대로 차감).
+        {selected.length > 0 && <> 선택 잔여 <b style={{ color: C.ink }}>{minToHM(selectedRemain)}</b> · 정산 <b style={{ color: C.clay }}>{minToHM(want)}</b></>}
+      </div>
+      {openEarns.length === 0 ? (
+        <div style={{ fontSize: 12.5, color: C.sub, padding: "10px 0" }}>차감할 수 있는 발생 잔여가 없습니다. 먼저 ‘발생’으로 적립하세요.</div>
+      ) : (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+          {openEarns.map((f) => {
+            const on = selected.includes(f.id);
+            return (
+              <button key={f.id} onClick={() => toggleSel(f.id)} style={{
+                textAlign: "left", border: `1.5px solid ${on ? C.green : C.line}`, background: on ? C.greenSoft : C.card,
+                borderRadius: 10, padding: "8px 11px", cursor: "pointer", maxWidth: 230,
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ width: 15, height: 15, borderRadius: 5, border: `1.5px solid ${on ? C.green : C.line}`, background: on ? C.green : "#fff", color: "#fff", fontSize: 10, display: "grid", placeItems: "center", flexShrink: 0 }}>{on ? "✓" : ""}</span>
+                  <span style={{ fontFamily: SERIF, fontSize: 13, color: C.sub }}>{fmtDate(f.date)}</span>
+                  <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: C.green }}>잔여 {minToHM(remainOf(f))}</span>
+                </div>
+                <div style={{ fontSize: 11.5, color: C.sub, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.reason || "(사유 없음)"}</div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <p style={{ margin: "9px 2px 0", fontSize: 11, color: C.sub }}>
+        사용시간을 비우면 선택한 발생의 잔여 전부를 차감합니다. 값을 넣으면 그만큼만 선택 순서대로 차감합니다.
+      </p>
     </div>
   );
 }
