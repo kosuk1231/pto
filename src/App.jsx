@@ -70,11 +70,30 @@ const fmtDate = (iso) => {
   if (m) return `${Number(m[2])}/${Number(m[3])}`;
   return ""; // 깨진 값은 빈칸 처리(저장 시 정리됨)
 };
+/* 어떤 형태의 날짜 문자열이 와도 ISO(yyyy-mm-dd)로 정규화.
+   복구 불가능한 값(1899 등)은 빈 문자열을 돌려준다. */
+const normalizeDate = (v) => {
+  if (!v) return "";
+  const s = String(v).replace(/^'/, "").trim();
+  const m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m && m[1] !== "1899") return `${m[1]}-${String(Number(m[2])).padStart(2, "0")}-${String(Number(m[3])).padStart(2, "0")}`;
+  return ""; // Sat Dec 30 1899 … → 원본 날짜 유실, 사용자가 다시 입력
+};
 const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
-const sortByDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+const sortByDate = (a, b) => {
+  const x = a.date || "9999", y = b.date || "9999";
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+const normalizeData = (d) => ({
+  ...defaultData(), ...d,
+  caps: { ...defaultData().caps, ...(d.caps || {}) },
+  profile: { ...defaultData().profile, ...(d.profile || {}) },
+  leave: (d.leave || []).map((r) => ({ ...r, date: normalizeDate(r.date) })),
+  flex: (d.flex || []).map((r) => ({ ...r, date: normalizeDate(r.date) })),
+});
 
 const defaultData = () => ({
   profile: { name: "", dept: "" },
@@ -87,14 +106,7 @@ const defaultData = () => ({
 function loadData() {
   try {
     const v = localStorage.getItem(STORE_KEY);
-    if (v) {
-      const d = JSON.parse(v);
-      return {
-        ...defaultData(), ...d,
-        caps: { ...defaultData().caps, ...(d.caps || {}) },
-        profile: { ...defaultData().profile, ...(d.profile || {}) },
-      };
-    }
+    if (v) return normalizeData(JSON.parse(v));
   } catch (e) {}
   return defaultData();
 }
@@ -138,7 +150,7 @@ export default function App() {
         if (!alive) return;
         const n = ((remote.leave && remote.leave.length) || 0) + ((remote.flex && remote.flex.length) || 0);
         if (n > 0) {
-          setData({ ...defaultData(), ...remote, caps: { ...defaultData().caps, ...(remote.caps || {}) }, profile: { ...defaultData().profile, ...(remote.profile || {}) } });
+          setData(normalizeData(remote));
           setSync("saved");
         } else {
           const local = dataRef.current;
@@ -194,6 +206,8 @@ export default function App() {
   const addFlex = (rec) => setData((d) => ({ ...d, flex: [...d.flex, { id: uid(), ...rec }].sort(sortByDate) }));
   const delLeave = (id) => setData((d) => ({ ...d, leave: d.leave.filter((r) => r.id !== id) }));
   const delFlex = (id) => setData((d) => ({ ...d, flex: d.flex.filter((r) => r.id !== id) }));
+  const updateLeave = (id, patch) => setData((d) => ({ ...d, leave: d.leave.map((r) => (r.id === id ? { ...r, ...patch } : r)).sort(sortByDate) }));
+  const updateFlex = (id, patch) => setData((d) => ({ ...d, flex: d.flex.map((r) => (r.id === id ? { ...r, ...patch } : r)).sort(sortByDate) }));
   const setProfile = (p) => setData((d) => ({ ...d, profile: { ...d.profile, ...p } }));
   const setCap = (k, v) => setData((d) => ({ ...d, caps: { ...d.caps, [k]: v } }));
 
@@ -216,9 +230,9 @@ export default function App() {
       </nav>
 
       {tab === "leave" ? (
-        <LeaveSection data={data} usedByType={usedByType} addLeave={addLeave} delLeave={delLeave} />
+        <LeaveSection data={data} usedByType={usedByType} addLeave={addLeave} delLeave={delLeave} updateLeave={updateLeave} />
       ) : (
-        <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} usedMap={usedMap} />
+        <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} usedMap={usedMap} updateFlex={updateFlex} />
       )}
 
       <Footer onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }} />
@@ -359,7 +373,7 @@ function CapEdit({ value, onChange }) {
 const cardStyle = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 15px", boxShadow: "0 1px 2px rgba(43,38,32,.04)" };
 
 /* ============================ 휴가 섹션 ============================ */
-function LeaveSection({ data, usedByType, addLeave, delLeave }) {
+function LeaveSection({ data, usedByType, addLeave, delLeave, updateLeave }) {
   const [type, setType] = useState("annual");
   const [date, setDate] = useState(todayISO());
   const [days, setDays] = useState(0.25);
@@ -425,7 +439,7 @@ function LeaveSection({ data, usedByType, addLeave, delLeave }) {
               const t = LEAVE_TYPES[r.type];
               return (
                 <div key={r.id} className="lm-row">
-                  <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(r.date)}</span>
+                  <DateCell value={r.date} onChange={(v) => updateLeave(r.id, { date: v })} />
                   <span style={{ fontSize: 11, fontWeight: 700, color: t.color, background: t.soft, padding: "3px 9px", borderRadius: 99, textAlign: "center", whiteSpace: "nowrap" }}>{t.label}</span>
                   <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 14, minWidth: 78 }}>{dayText(r.days)}</span>
                   <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{r.note}</span>
@@ -441,7 +455,7 @@ function LeaveSection({ data, usedByType, addLeave, delLeave }) {
 }
 
 /* ============================ 탄력 섹션 ============================ */
-function FlexSection({ data, addFlex, delFlex, bal, usedMap }) {
+function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
   const [kind, setKind] = useState("적립");
   const [date, setDate] = useState(todayISO());
   const [reason, setReason] = useState("");
@@ -560,7 +574,7 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap }) {
               const rem = isEarn ? remainOf(f) : null;
               return (
                 <div key={f.id} className="lm-row">
-                  <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(f.date)}</span>
+                  <DateCell value={f.date} onChange={(v) => updateFlex(f.id, { date: v })} />
                   <span style={{ minWidth: 50, textAlign: "center", fontSize: 11, fontWeight: 700, color: isEarn ? C.green : C.clay }}>{isEarn ? "＋적립" : "－사용"}</span>
                   <span style={{ minWidth: 88, fontSize: 12, color: C.sub }}>
                     <b style={{ fontFamily: SERIF, color: C.ink }}>{minToHM(f._amt)}</b>
@@ -614,6 +628,28 @@ function UsePicker({ openEarns, remainOf, selected, toggleSel, selectedRemain, u
         사용시간을 비우면 선택한 발생의 잔여 전부를 차감합니다. 값을 넣으면 그만큼만 선택 순서대로 차감합니다.
       </p>
     </div>
+  );
+}
+
+/* 일자 셀 — 클릭하면 날짜 편집. 빈 날짜는 ‘날짜 입력’으로 강조 */
+function DateCell({ value, onChange }) {
+  const [edit, setEdit] = useState(false);
+  if (edit)
+    return (
+      <input
+        type="date" autoFocus value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => setEdit(false)}
+        onKeyDown={(e) => e.key === "Enter" && setEdit(false)}
+        style={{ width: 138, padding: "3px 6px", border: `1px solid ${C.line}`, borderRadius: 7, fontSize: 13 }}
+      />
+    );
+  const has = !!fmtDate(value);
+  return (
+    <button onClick={() => setEdit(true)} title="날짜 수정"
+      style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, textAlign: "left", border: has ? "none" : `1px dashed ${C.clay}`, background: has ? "transparent" : C.claySoft, color: has ? C.sub : C.clay, cursor: "pointer", padding: has ? 0 : "2px 6px", borderRadius: 6 }}>
+      {has ? fmtDate(value) : "날짜입력"}
+    </button>
   );
 }
 
