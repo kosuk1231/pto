@@ -208,6 +208,33 @@ export default function App() {
   const delFlex = (id) => setData((d) => ({ ...d, flex: d.flex.filter((r) => r.id !== id) }));
   const updateLeave = (id, patch) => setData((d) => ({ ...d, leave: d.leave.map((r) => (r.id === id ? { ...r, ...patch } : r)).sort(sortByDate) }));
   const updateFlex = (id, patch) => setData((d) => ({ ...d, flex: d.flex.map((r) => (r.id === id ? { ...r, ...patch } : r)).sort(sortByDate) }));
+
+  // 가져오기: id 기준 병합(있으면 덮어쓰고, 없으면 추가)
+  const importData = (incoming) => {
+    const inc = normalizeData(incoming);
+    setData((d) => {
+      const mergeById = (cur, add) => {
+        const map = new Map(cur.map((r) => [r.id, r]));
+        add.forEach((r) => map.set(r.id, { ...map.get(r.id), ...r }));
+        return [...map.values()].sort(sortByDate);
+      };
+      return {
+        ...d,
+        caps: { ...d.caps, ...(inc.caps || {}) },
+        profile: { ...d.profile, ...(inc.profile || {}) },
+        leave: mergeById(d.leave, inc.leave || []),
+        flex: mergeById(d.flex, inc.flex || []),
+      };
+    });
+  };
+  const exportData = () => {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `휴가탄력_백업_${todayISO()}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
   const setProfile = (p) => setData((d) => ({ ...d, profile: { ...d.profile, ...p } }));
   const setCap = (k, v) => setData((d) => ({ ...d, caps: { ...d.caps, [k]: v } }));
 
@@ -235,7 +262,11 @@ export default function App() {
         <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} usedMap={usedMap} updateFlex={updateFlex} />
       )}
 
-      <Footer onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }} />
+      <Footer
+        onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }}
+        onImport={importData}
+        onExport={exportData}
+      />
     </div>
   );
 }
@@ -808,11 +839,30 @@ function TabBtn({ active, children, onClick }) {
 function Empty({ children }) {
   return <div style={{ ...panel, textAlign: "center", color: C.sub, fontSize: 13, padding: "30px 16px" }}>{children}</div>;
 }
-function Footer({ onReset }) {
+function Footer({ onReset, onImport, onExport }) {
+  const fileRef = useRef(null);
+  const pick = () => fileRef.current && fileRef.current.click();
+  const onFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try { onImport(JSON.parse(r.result)); alert("가져오기 완료. 기존 기록과 병합되었습니다."); }
+      catch (err) { alert("파일을 읽을 수 없습니다(JSON 형식 확인)."); }
+    };
+    r.readAsText(file);
+    e.target.value = "";
+  };
+  const btn = { background: "none", border: `1px solid ${C.line}`, color: C.sub, padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 11.5, fontFamily: "var(--sans)" };
   return (
     <div style={{ marginTop: 30, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 11.5, color: C.sub, flexWrap: "wrap" }}>
       <span>8시간 = 1일 · 탄력근무 10분 단위</span>
-      <button onClick={onReset} style={{ background: "none", border: `1px solid ${C.line}`, color: C.sub, padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 11.5 }}>전체 초기화</button>
+      <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+        <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} style={{ display: "none" }} />
+        <button onClick={pick} style={btn}>가져오기(JSON)</button>
+        <button onClick={onExport} style={btn}>백업 내보내기</button>
+        <button onClick={onReset} style={{ ...btn, color: C.clay, borderColor: C.claySoft }}>전체 초기화</button>
+      </div>
     </div>
   );
 }
