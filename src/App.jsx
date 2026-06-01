@@ -236,6 +236,74 @@ export default function App() {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+
+  const exportExcel = async () => {
+    const XLSX = await import("xlsx");
+    const wb = XLSX.utils.book_new();
+
+    // 1) 휴가내역
+    const leaveRows = [...data.leave].sort(sortByDate).map((r) => ({
+      날짜: r.date || "",
+      종류: (LEAVE_TYPES[r.type] && LEAVE_TYPES[r.type].label) || r.type,
+      사용: dayText(r.days),
+      "일수(8h=1일)": r.days,
+      비고: r.note || "",
+    }));
+    const wsLeave = XLSX.utils.json_to_sheet(leaveRows.length ? leaveRows : [{ 날짜: "", 종류: "", 사용: "", "일수(8h=1일)": "", 비고: "" }]);
+    wsLeave["!cols"] = [{ wch: 12 }, { wch: 13 }, { wch: 12 }, { wch: 13 }, { wch: 34 }];
+    XLSX.utils.book_append_sheet(wb, wsLeave, "휴가내역");
+
+    // 2) 탄력내역 — 발생/사용을 한 시트에, 사용은 차감한 발생 사유 표기
+    const earnsById = {};
+    data.flex.filter((f) => f.kind === "적립").forEach((f) => (earnsById[f.id] = f));
+    const flexRows = [...data.flex].sort(sortByDate).map((f) => {
+      const isEarn = f.kind === "적립";
+      let used = "";
+      if (!isEarn) {
+        const ls = f.links || [];
+        used = ls.map((l) => {
+          const e = earnsById[l.id];
+          return `${e ? (e.reason || fmtDate(e.date)) : l.id} ${minToHM(l.min || 0)}`;
+        }).join(" / ");
+      }
+      const total = isEarn ? f.min : (f.links ? f.links.reduce((a, l) => a + (l.min || 0), 0) : f.min);
+      return {
+        날짜: f.date || "",
+        구분: f.kind,
+        부터: f.from || "",
+        까지: f.to || "",
+        소요시간: minToHM(total || 0),
+        분: total || 0,
+        사유: f.reason || "",
+        "차감한 발생": used,
+      };
+    });
+    const wsFlex = XLSX.utils.json_to_sheet(flexRows.length ? flexRows : [{ 날짜: "", 구분: "", 부터: "", 까지: "", 소요시간: "", 분: "", 사유: "", "차감한 발생": "" }]);
+    wsFlex["!cols"] = [{ wch: 12 }, { wch: 7 }, { wch: 7 }, { wch: 7 }, { wch: 9 }, { wch: 6 }, { wch: 34 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, wsFlex, "탄력내역");
+
+    // 3) 요약
+    const summary = [];
+    LEAVE_ORDER.forEach((k) => {
+      const t = LEAVE_TYPES[k];
+      const used = usedByType[k] || 0;
+      summary.push({
+        구분: t.label,
+        "총(일)": t.capped ? data.caps[k] : "-",
+        "사용(일)": fmtNum(used),
+        "잔여(일)": t.capped ? fmtNum(data.caps[k] - used) : "-",
+      });
+    });
+    summary.push({ 구분: "", "총(일)": "", "사용(일)": "", "잔여(일)": "" });
+    summary.push({ 구분: "탄력 적립", "총(일)": "", "사용(일)": minToHM(flexAcc), "잔여(일)": "" });
+    summary.push({ 구분: "탄력 사용", "총(일)": "", "사용(일)": minToHM(flexUse), "잔여(일)": "" });
+    summary.push({ 구분: "탄력 잔여", "총(일)": "", "사용(일)": "", "잔여(일)": minToHM(flexBal) });
+    const wsSum = XLSX.utils.json_to_sheet(summary);
+    wsSum["!cols"] = [{ wch: 14 }, { wch: 9 }, { wch: 10 }, { wch: 10 }];
+    XLSX.utils.book_append_sheet(wb, wsSum, "요약");
+
+    XLSX.writeFile(wb, `휴가탄력_내역_${todayISO()}.xlsx`);
+  };
   const setProfile = (p) => setData((d) => ({ ...d, profile: { ...d.profile, ...p } }));
   const setCap = (k, v) => setData((d) => ({ ...d, caps: { ...d.caps, [k]: v } }));
 
@@ -267,6 +335,7 @@ export default function App() {
         onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }}
         onImport={importData}
         onExport={exportData}
+        onExportExcel={exportExcel}
       />
     </div>
   );
@@ -840,9 +909,10 @@ function TabBtn({ active, children, onClick }) {
 function Empty({ children }) {
   return <div style={{ ...panel, textAlign: "center", color: C.sub, fontSize: 13, padding: "30px 16px" }}>{children}</div>;
 }
-function Footer({ onReset, onImport, onExport }) {
+function Footer({ onReset, onImport, onExport, onExportExcel }) {
   const fileRef = useRef(null);
   const pick = () => fileRef.current && fileRef.current.click();
+  const [busy, setBusy] = useState(false);
   const onFile = (e) => {
     const file = e.target.files && e.target.files[0];
     if (!file) return;
@@ -854,6 +924,11 @@ function Footer({ onReset, onImport, onExport }) {
     r.readAsText(file);
     e.target.value = "";
   };
+  const doExcel = async () => {
+    setBusy(true);
+    try { await onExportExcel(); } catch (e) { alert("엑셀 내보내기에 실패했습니다."); }
+    setBusy(false);
+  };
   const btn = { background: "none", border: `1px solid ${C.line}`, color: C.sub, padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 11.5, fontFamily: "var(--sans)" };
   return (
     <div style={{ marginTop: 30, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 11.5, color: C.sub, flexWrap: "wrap" }}>
@@ -861,7 +936,8 @@ function Footer({ onReset, onImport, onExport }) {
       <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
         <input ref={fileRef} type="file" accept="application/json,.json" onChange={onFile} style={{ display: "none" }} />
         <button onClick={pick} style={btn}>가져오기(JSON)</button>
-        <button onClick={onExport} style={btn}>백업 내보내기</button>
+        <button onClick={doExcel} disabled={busy} style={{ ...btn, color: C.green, borderColor: "#CDE0D7", opacity: busy ? 0.6 : 1 }}>{busy ? "내보내는 중…" : "엑셀 내보내기"}</button>
+        <button onClick={onExport} style={btn}>백업(JSON)</button>
         <button onClick={onReset} style={{ ...btn, color: C.clay, borderColor: C.claySoft }}>전체 초기화</button>
       </div>
     </div>
