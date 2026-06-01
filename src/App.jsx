@@ -442,7 +442,7 @@ function LeaveSection({ data, usedByType, addLeave, delLeave, updateLeave }) {
                   <DateCell value={r.date} onChange={(v) => updateLeave(r.id, { date: v })} />
                   <span style={{ fontSize: 11, fontWeight: 700, color: t.color, background: t.soft, padding: "3px 9px", borderRadius: 99, textAlign: "center", whiteSpace: "nowrap" }}>{t.label}</span>
                   <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 14, minWidth: 78 }}>{dayText(r.days)}</span>
-                  <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{r.note}</span>
+                  <TextCell value={r.note} onChange={(v) => updateLeave(r.id, { note: v })} placeholder="비고 입력" />
                   <button onClick={() => delLeave(r.id)} style={delBtn}>✕</button>
                 </div>
               );
@@ -466,6 +466,7 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
   // 사용 모드: 선택한 발생들과 사용 시간
   const [selected, setSelected] = useState([]); // 발생 id 배열(선택 순서 유지)
   const [useMin, setUseMin] = useState(""); // 분, 비우면 선택 잔여 전부
+  const reasonTouched = useRef(false); // 사용자가 사유칸을 직접 고쳤는지
 
   // 발생별 잔여(분)
   const remainOf = (f) => (f.min || 0) - (usedMap[f.id] || 0);
@@ -477,8 +478,25 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
     return s + (f ? remainOf(f) : 0);
   }, 0);
 
+  // 선택한 발생들의 사유를 합쳐 문자열로
+  const reasonFromIds = (ids) => {
+    const names = ids
+      .map((id) => earns.find((e) => e.id === id))
+      .filter(Boolean)
+      .map((e) => e.reason || fmtDate(e.date) || "발생");
+    return [...new Set(names)].join(", ");
+  };
+
   const toggleSel = (id) =>
-    setSelected((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+    setSelected((cur) => {
+      const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
+      // 사용자가 직접 고치지 않았다면 선택 사유를 자동으로 채움
+      if (!reasonTouched.current) setReason(reasonFromIds(next));
+      return next;
+    });
+
+  // 사용자가 사유칸을 직접 입력하면 자동채움 중단
+  const onReasonEdit = (v) => { reasonTouched.current = true; setReason(v); };
 
   const submitEarn = () => {
     if (!date || autoMin <= 0) return;
@@ -502,8 +520,18 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
       if (take > 0) { links.push({ id, min: take }); left -= take; }
     }
     if (links.length === 0) return;
-    addFlex({ kind: "사용", date, reason: reason.trim(), links, min: want - left });
-    setReason(""); setSelected([]); setUseMin("");
+    // 사유를 비우면 차감한 발생들의 사유로 자동 생성
+    let rsn = reason.trim();
+    if (!rsn) {
+      const names = links
+        .map((l) => earns.find((e) => e.id === l.id))
+        .filter(Boolean)
+        .map((e) => e.reason || fmtDate(e.date) || "발생");
+      const uniq = [...new Set(names)];
+      rsn = uniq.length ? uniq.join(", ") + " 차감" : "탄력 사용";
+    }
+    addFlex({ kind: "사용", date, reason: rsn, links, min: want - left });
+    setReason(""); setSelected([]); setUseMin(""); reasonTouched.current = false;
   };
 
   // 목록(누적 잔여 표시)
@@ -522,7 +550,7 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
           <Field label="구분">
             <div className="lm-chiprow" style={{ display: "flex", gap: 5 }}>
               {["적립", "사용"].map((k) => (
-                <button key={k} onClick={() => { setKind(k); }} style={{ ...chip, ...(kind === k ? { ...chipOn, background: k === "적립" ? C.green : C.clay } : {}) }}>
+                <button key={k} onClick={() => { setKind(k); setReason(""); setSelected([]); reasonTouched.current = false; }} style={{ ...chip, ...(kind === k ? { ...chipOn, background: k === "적립" ? C.green : C.clay } : {}) }}>
                   {k === "적립" ? "＋ 발생" : "－ 사용"}
                 </button>
               ))}
@@ -543,7 +571,14 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
               <Field label="사용시간">
                 <input type="number" step="30" min="0" placeholder={selectedRemain ? `전부(${minToHM(selectedRemain)})` : "분"} value={useMin} onChange={(e) => setUseMin(e.target.value)} style={{ ...selStyle, width: 130 }} />
               </Field>
-              <Field label="사유" grow><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 늦은 출근 / 이른 퇴근" style={{ ...selStyle, width: "100%" }} /></Field>
+              <Field label="사유" grow>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input value={reason} onChange={(e) => onReasonEdit(e.target.value)} placeholder="발생 선택 시 자동 입력 (직접 수정 가능)" style={{ ...selStyle, width: "100%" }} />
+                  {reasonTouched.current && selected.length > 0 && (
+                    <button onClick={() => { reasonTouched.current = false; setReason(reasonFromIds(selected)); }} title="선택 사유로 되돌리기" style={{ ...fchip, padding: "0 11px", whiteSpace: "nowrap" }}>↺ 자동</button>
+                  )}
+                </div>
+              </Field>
               <button className="lm-add" onClick={submitUse} style={{ ...addBtn, background: C.clay, opacity: selected.length ? 1 : 0.5 }}>－ 정산</button>
             </>
           )}
@@ -581,7 +616,7 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
                     {isEarn && f.from && <span className="lm-hidemob" style={{ fontSize: 10, marginLeft: 5 }}>{f.from}~{f.to}</span>}
                     {isEarn && rem < f.min && <span style={{ fontSize: 10, marginLeft: 5, color: rem > 0 ? C.green : C.sub }}>잔여 {minToHM(rem)}</span>}
                   </span>
-                  <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{f.reason}</span>
+                  <TextCell value={f.reason} onChange={(v) => updateFlex(f.id, { reason: v })} placeholder="사유 입력" />
                   <span style={{ minWidth: 56, marginLeft: "auto", textAlign: "right", fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: f.run < 0 ? C.clay : C.ink }}>{minToHM(f.run)}</span>
                   <button onClick={() => delFlex(f.id)} style={delBtn}>✕</button>
                 </div>
@@ -628,6 +663,32 @@ function UsePicker({ openEarns, remainOf, selected, toggleSel, selectedRemain, u
         사용시간을 비우면 선택한 발생의 잔여 전부를 차감합니다. 값을 넣으면 그만큼만 선택 순서대로 차감합니다.
       </p>
     </div>
+  );
+}
+
+/* 사유 등 텍스트 셀 — 클릭하면 편집 */
+function TextCell({ value, onChange, placeholder }) {
+  const [edit, setEdit] = useState(false);
+  const [v, setV] = useState(value || "");
+  useEffect(() => setV(value || ""), [value]);
+  if (edit)
+    return (
+      <input
+        autoFocus value={v}
+        onChange={(e) => setV(e.target.value)}
+        onBlur={() => { setEdit(false); onChange(v.trim()); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { setEdit(false); onChange(v.trim()); } }}
+        placeholder={placeholder}
+        className="lm-note"
+        style={{ fontSize: 12.5, padding: "3px 6px", border: `1px solid ${C.line}`, borderRadius: 7, fontFamily: "var(--sans)", outline: "none" }}
+      />
+    );
+  const empty = !value;
+  return (
+    <span className="lm-note" onClick={() => setEdit(true)} title="사유 수정"
+      style={{ fontSize: 12.5, color: empty ? C.clay : C.sub, cursor: "pointer", borderBottom: `1px dotted ${empty ? C.clay : "transparent"}` }}>
+      {value || placeholder || "사유 입력"}
+    </span>
   );
 }
 
