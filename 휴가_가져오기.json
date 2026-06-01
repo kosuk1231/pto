@@ -1,0 +1,74 @@
+{
+  "leave": [
+    {
+      "id": "LV-01",
+      "type": "family",
+      "date": "2026-01-08",
+      "days": 1.0,
+      "note": "자녀 병원진료"
+    },
+    {
+      "id": "LV-02",
+      "type": "annual",
+      "date": "2026-01-30",
+      "days": 0.5,
+      "note": "개인사유 (14:00~18:00)"
+    },
+    {
+      "id": "LV-03",
+      "type": "comp",
+      "date": "2026-02-13",
+      "days": 1.0,
+      "note": "워크숍 대체휴무"
+    },
+    {
+      "id": "LV-04",
+      "type": "annual",
+      "date": "2026-03-18",
+      "days": 1.0,
+      "note": "개인사유"
+    },
+    {
+      "id": "LV-05",
+      "type": "annual",
+      "date": "2026-03-10",
+      "days": 1.0,
+      "note": "개인사유"
+    },
+    {
+      "id": "LV-06",
+      "type": "annual",
+      "date": "2026-04-02",
+      "days": 1.0,
+      "note": "개인사유"
+    },
+    {
+      "id": "LV-07",
+      "type": "special",
+      "date": "2026-04-17",
+      "days": 1.0,
+      "note": "창립기념일"
+    },
+    {
+      "id": "LV-08",
+      "type": "annual",
+      "date": "2026-05-04",
+      "days": 1.0,
+      "note": "개인사유"
+    },
+    {
+      "id": "LV-09",
+      "type": "annual",
+      "date": "2026-06-01",
+      "days": 0.25,
+      "note": "개인사유 (09:00~11:00, 2시간)"
+    }
+  ],
+  "flex": [],
+  "caps": {
+    "annual": 20,
+    "family": 3,
+    "longterm": 10
+  },
+  "profile": {}
+}

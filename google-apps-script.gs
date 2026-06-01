@@ -16,7 +16,7 @@
  *  ──────────────────────────────────────────────────────────────── */
 
 var SHEETS = { leave: "연차", flex: "탄력", config: "설정" };
-var TYPE_LABEL = { annual: "연차", family: "가족돌봄휴가", longterm: "장기근속휴가", official: "공가", special: "특별휴가" };
+var TYPE_LABEL = { annual: "연차", family: "가족돌봄휴가", longterm: "장기근속휴가", comp: "대체휴무", official: "공가", special: "특별휴가" };
 var LABEL_TYPE = {};
 Object.keys(TYPE_LABEL).forEach(function (k) { LABEL_TYPE[TYPE_LABEL[k]] = k; });
 

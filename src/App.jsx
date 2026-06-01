@@ -28,10 +28,11 @@ const LEAVE_TYPES = {
   annual: { key: "annual", label: "연차", capDays: 20, color: C.green, soft: C.greenSoft, capped: true },
   family: { key: "family", label: "가족돌봄휴가", capDays: 3, color: C.blue, soft: C.blueSoft, capped: true },
   longterm: { key: "longterm", label: "장기근속휴가", capDays: 10, color: C.gold, soft: "#F3ECD8", capped: true },
+  comp: { key: "comp", label: "대체휴무", capDays: null, color: "#5A6E2F", soft: "#ECF0DD", capped: false },
   official: { key: "official", label: "공가", capDays: null, color: C.sub, soft: "#EFEADF", capped: false },
   special: { key: "special", label: "특별휴가", capDays: null, color: C.clay, soft: C.claySoft, capped: false },
 };
-const LEAVE_ORDER = ["annual", "family", "longterm", "official", "special"];
+const LEAVE_ORDER = ["annual", "family", "longterm", "comp", "official", "special"];
 
 /* ---- helpers ---- */
 const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
@@ -181,7 +182,7 @@ export default function App() {
   }, [data]);
 
   const usedByType = useMemo(() => {
-    const o = { annual: 0, family: 0, longterm: 0, official: 0, special: 0 };
+    const o = { annual: 0, family: 0, longterm: 0, comp: 0, official: 0, special: 0 };
     data.leave.forEach((r) => { o[r.type] = (o[r.type] || 0) + (r.days || 0); });
     return o;
   }, [data.leave]);
