@@ -1,0 +1,540 @@
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { loadRemote, saveRemote } from "./sheetSync.js";
+
+/* =========================================================================
+   개인 휴가 · 탄력근무 관리 (2026)
+   - 연차 20일 / 가족돌봄휴가 3일 / 장기근속휴가 10일 → 잔여 차감
+   - 공가 / 특별휴가 → 상한 없이 누적
+   - 탄력근무 → 발생(적립) / 사용(차감), 잔여 시간 관리
+   - 기록은 localStorage 에 자동 저장 (기기·브라우저별 보관)
+   ========================================================================= */
+
+const STORE_KEY = "leaveData_2026_v1";
+const YEAR = 2026;
+const SERIF = "var(--serif)";
+
+/* 기본 연동 주소 — 처음 실행 시 이 스프레드시트로 자동 연결.
+   (앱 화면에서 변경/해제 가능, 변경값은 localStorage 에 저장됨) */
+const DEFAULT_SHEET_URL =
+  "https://script.google.com/macros/s/AKfycbw9p6jJAVHUUE9fYfvEZHMfjBLAHXHluji7On87-2fisarYuwVeTi4nxNgFpAME9Hdn/exec";
+
+const C = {
+  paper: "#F6F2E9", card: "#FFFFFF", ink: "#2B2620", sub: "#7A7164", line: "#E7DFCF",
+  green: "#1F6B57", greenSoft: "#E5F0EC", clay: "#B5452F", claySoft: "#F4E4DE",
+  gold: "#A8842C", blue: "#34607A", blueSoft: "#E3ECF1",
+};
+
+const LEAVE_TYPES = {
+  annual: { key: "annual", label: "연차", capDays: 20, color: C.green, soft: C.greenSoft, capped: true },
+  family: { key: "family", label: "가족돌봄휴가", capDays: 3, color: C.blue, soft: C.blueSoft, capped: true },
+  longterm: { key: "longterm", label: "장기근속휴가", capDays: 10, color: C.gold, soft: "#F3ECD8", capped: true },
+  official: { key: "official", label: "공가", capDays: null, color: C.sub, soft: "#EFEADF", capped: false },
+  special: { key: "special", label: "특별휴가", capDays: null, color: C.clay, soft: C.claySoft, capped: false },
+};
+const LEAVE_ORDER = ["annual", "family", "longterm", "official", "special"];
+
+/* ---- helpers ---- */
+const uid = () => Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-3);
+const dayText = (d) => {
+  if (!d) return "0";
+  const full = Math.floor(d + 1e-9);
+  const h = Math.round((d - full) * 8);
+  const p = [];
+  if (full) p.push(`${full}일`);
+  if (h) p.push(`${h}시간`);
+  return p.length ? p.join(" ") : "0";
+};
+const fmtNum = (n) => String(Math.round(n * 100) / 100);
+const minToText = (m) => {
+  if (!m) return "0";
+  const s = m < 0 ? "-" : "", a = Math.abs(m), h = Math.floor(a / 60), mm = a % 60, p = [];
+  if (h) p.push(`${h}시간`); if (mm) p.push(`${mm}분`);
+  return s + (p.length ? p.join(" ") : "0");
+};
+const minToHM = (m) => {
+  const s = m < 0 ? "-" : "", a = Math.abs(m);
+  return `${s}${Math.floor(a / 60)}:${String(a % 60).padStart(2, "0")}`;
+};
+const timeToMin = (t) => {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  return Number.isNaN(h) || Number.isNaN(m) ? null : h * 60 + m;
+};
+const diffMin = (f, t) => {
+  const a = timeToMin(f), b = timeToMin(t);
+  return a == null || b == null ? 0 : Math.max(0, b - a);
+};
+const fmtDate = (iso) => {
+  if (!iso) return "";
+  const [, m, d] = iso.split("-");
+  return `${Number(m)}/${Number(d)}`;
+};
+const todayISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const sortByDate = (a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0);
+
+const defaultData = () => ({
+  profile: { name: "", dept: "" },
+  caps: { annual: 20, family: 3, longterm: 10 },
+  leave: [],
+  flex: [],
+});
+
+/* ---- localStorage ---- */
+function loadData() {
+  try {
+    const v = localStorage.getItem(STORE_KEY);
+    if (v) {
+      const d = JSON.parse(v);
+      return {
+        ...defaultData(), ...d,
+        caps: { ...defaultData().caps, ...(d.caps || {}) },
+        profile: { ...defaultData().profile, ...(d.profile || {}) },
+      };
+    }
+  } catch (e) {}
+  return defaultData();
+}
+function saveData(d) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(d)); return true; } catch (e) { return false; }
+}
+
+/* ============================ App ============================ */
+export default function App() {
+  const [data, setData] = useState(loadData);
+  const [tab, setTab] = useState("leave");
+  const [flash, setFlash] = useState(false);
+  const [sheetUrl, setSheetUrl] = useState(() => {
+    try {
+      const stored = localStorage.getItem("sheetUrl");
+      if (stored !== null) return stored;          // 사용자가 설정/해제한 값 우선
+    } catch (e) {}
+    return DEFAULT_SHEET_URL;                        // 최초 실행 시 기본 주소
+  });
+  const [sync, setSync] = useState("idle"); // idle | loading | saving | saved | error | offline
+  const first = useRef(true);
+  const dataRef = useRef(data);
+  const urlRef = useRef(sheetUrl);
+  const timer = useRef(null);
+  dataRef.current = data;
+  urlRef.current = sheetUrl;
+
+  const connect = (url) => {
+    const u = (url || "").trim();
+    setSheetUrl(u);
+    try { u ? localStorage.setItem("sheetUrl", u) : localStorage.removeItem("sheetUrl"); } catch (e) {}
+  };
+
+  /* 연결 시 스프레드시트에서 불러오기 */
+  useEffect(() => {
+    if (!sheetUrl) { setSync("idle"); return; }
+    let alive = true;
+    setSync("loading");
+    loadRemote(sheetUrl)
+      .then((remote) => {
+        if (!alive) return;
+        const n = ((remote.leave && remote.leave.length) || 0) + ((remote.flex && remote.flex.length) || 0);
+        if (n > 0) {
+          setData({ ...defaultData(), ...remote, caps: { ...defaultData().caps, ...(remote.caps || {}) }, profile: { ...defaultData().profile, ...(remote.profile || {}) } });
+          setSync("saved");
+        } else {
+          const local = dataRef.current;
+          if (local.leave.length + local.flex.length > 0) {
+            saveRemote(sheetUrl, local).then(() => alive && setSync("saved")).catch(() => alive && setSync("error"));
+          } else setSync("saved");
+        }
+      })
+      .catch(() => { if (alive) setSync("offline"); });
+    return () => { alive = false; };
+  }, [sheetUrl]);
+
+  /* 변경 저장: 로컬 즉시 + 원격 디바운스 */
+  useEffect(() => {
+    saveData(data);
+    if (first.current) { first.current = false; return; }
+    setFlash(true);
+    const ft = setTimeout(() => setFlash(false), 1200);
+    const url = urlRef.current;
+    if (url) {
+      setSync("saving");
+      clearTimeout(timer.current);
+      timer.current = setTimeout(() => {
+        saveRemote(url, dataRef.current).then(() => setSync("saved")).catch(() => setSync("error"));
+      }, 900);
+    }
+    return () => clearTimeout(ft);
+  }, [data]);
+
+  const usedByType = useMemo(() => {
+    const o = { annual: 0, family: 0, longterm: 0, official: 0, special: 0 };
+    data.leave.forEach((r) => { o[r.type] = (o[r.type] || 0) + (r.days || 0); });
+    return o;
+  }, [data.leave]);
+
+  const flexAcc = useMemo(() => data.flex.filter((f) => f.kind === "적립").reduce((s, f) => s + (f.min || 0), 0), [data.flex]);
+  const flexUse = useMemo(() => data.flex.filter((f) => f.kind === "사용").reduce((s, f) => s + (f.min || 0), 0), [data.flex]);
+  const flexBal = flexAcc - flexUse;
+
+  const addLeave = (rec) => setData((d) => ({ ...d, leave: [...d.leave, { id: uid(), ...rec }].sort(sortByDate) }));
+  const addFlex = (rec) => setData((d) => ({ ...d, flex: [...d.flex, { id: uid(), ...rec }].sort(sortByDate) }));
+  const delLeave = (id) => setData((d) => ({ ...d, leave: d.leave.filter((r) => r.id !== id) }));
+  const delFlex = (id) => setData((d) => ({ ...d, flex: d.flex.filter((r) => r.id !== id) }));
+  const setProfile = (p) => setData((d) => ({ ...d, profile: { ...d.profile, ...p } }));
+  const setCap = (k, v) => setData((d) => ({ ...d, caps: { ...d.caps, [k]: v } }));
+
+  return (
+    <div className="lm-wrap">
+      <Header data={data} setProfile={setProfile} flash={flash} sync={sync} sheetUrl={sheetUrl} />
+      <ConnectBar sheetUrl={sheetUrl} sync={sync} onConnect={connect} />
+
+      <section className="lm-grid">
+        {LEAVE_ORDER.map((k) => {
+          const t = LEAVE_TYPES[k];
+          return <LeaveCard key={k} t={t} used={usedByType[k] || 0} cap={t.capped ? data.caps[k] : null} setCap={(v) => setCap(k, v)} />;
+        })}
+        <FlexCard acc={flexAcc} use={flexUse} bal={flexBal} />
+      </section>
+
+      <nav style={{ display: "flex", gap: 6, marginTop: 26, borderBottom: `1.5px solid ${C.line}` }}>
+        <TabBtn active={tab === "leave"} onClick={() => setTab("leave")}>휴가 기록</TabBtn>
+        <TabBtn active={tab === "flex"} onClick={() => setTab("flex")}>탄력근무 대장</TabBtn>
+      </nav>
+
+      {tab === "leave" ? (
+        <LeaveSection data={data} usedByType={usedByType} addLeave={addLeave} delLeave={delLeave} />
+      ) : (
+        <FlexSection data={data} addFlex={addFlex} delFlex={delFlex} bal={flexBal} />
+      )}
+
+      <Footer onReset={() => { if (confirm("모든 기록을 삭제하고 초기화할까요?")) setData(defaultData()); }} />
+    </div>
+  );
+}
+
+/* ============================ Header ============================ */
+function Header({ data, setProfile, flash, sync, sheetUrl }) {
+  return (
+    <header style={{ paddingTop: 26 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ display: "inline-grid", placeItems: "center", width: 30, height: 30, background: C.clay, color: "#fff", borderRadius: 7, fontFamily: SERIF, fontWeight: 700, fontSize: 15 }}>휴</span>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 800, letterSpacing: -0.5 }}>{YEAR} 개인 휴가·탄력 관리</h1>
+          </div>
+          <p style={{ margin: "8px 0 0", color: C.sub, fontSize: 13 }}>연차·가족돌봄·장기근속·공가·특별휴가 및 탄력근무 잔여를 한 곳에서.</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <EditField value={data.profile.name} placeholder="이름" onChange={(v) => setProfile({ name: v })} w={92} />
+          <EditField value={data.profile.dept} placeholder="부서" onChange={(v) => setProfile({ dept: v })} w={130} />
+        </div>
+      </div>
+      <div style={{ marginTop: 10, fontSize: 11.5, color: sheetUrl && (sync === "error" || sync === "offline") ? C.clay : sheetUrl ? C.green : C.sub, display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ width: 7, height: 7, borderRadius: 99, background: sheetUrl && (sync === "error" || sync === "offline") ? C.clay : sheetUrl ? C.green : C.sub, opacity: flash || sync === "saving" || sync === "loading" ? 1 : 0.5, transition: "opacity .3s" }} />
+        {!sheetUrl ? "이 기기에만 저장됨" : sync === "loading" ? "불러오는 중…" : sync === "saving" ? "동기화 중…" : sync === "offline" ? "오프라인 — 로컬에 저장됨" : sync === "error" ? "동기화 실패 — 로컬에는 저장됨" : "스프레드시트 동기화됨"}
+      </div>
+    </header>
+  );
+}
+function ConnectBar({ sheetUrl, sync, onConnect }) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(sheetUrl);
+  useEffect(() => setDraft(sheetUrl), [sheetUrl]);
+  const connected = !!sheetUrl;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ background: connected ? C.greenSoft : "#F2EDE2", color: connected ? C.green : C.sub, border: "none", padding: "6px 12px", borderRadius: 99, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+        {connected ? "☁ 스프레드시트 연동됨" : "＋ 스프레드시트에 저장하기"} {open ? "▴" : "▾"}
+      </button>
+      {open && (
+        <div style={{ ...panel, marginTop: 8 }}>
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: C.sub }}>
+            Google Apps Script 웹앱 URL(<b>…/exec</b>)을 붙여넣고 연결하세요. 설정 방법은 <b>google-apps-script.gs</b> 파일 상단 주석 참고.
+          </p>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="https://script.google.com/macros/s/.../exec" style={{ ...selStyle, flex: "1 1 260px", minWidth: 0 }} />
+            <button onClick={() => onConnect(draft)} style={addBtn}>연결</button>
+            {connected && <button onClick={() => onConnect("")} style={{ ...fchip, padding: "9px 14px" }}>연결 해제</button>}
+          </div>
+          <p style={{ margin: "10px 0 0", fontSize: 11, color: C.sub }}>
+            연결 후 다른 기기(휴대폰·PC)에서 같은 URL로 연결하면 기록이 공유됩니다. 인터넷이 끊겨도 이 기기에는 계속 저장됩니다.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EditField({ value, placeholder, onChange, w }) {
+  return (
+    <input value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)}
+      style={{ width: w, maxWidth: "42vw", padding: "7px 10px", border: `1px solid ${C.line}`, borderRadius: 8, background: C.card, fontSize: 13, color: C.ink, outline: "none" }} />
+  );
+}
+
+/* ============================ Cards ============================ */
+function LeaveCard({ t, used, cap, setCap }) {
+  if (t.capped) {
+    const remain = cap - used;
+    const pct = cap > 0 ? Math.min(100, (used / cap) * 100) : 0;
+    return (
+      <div style={cardStyle}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: t.color }}>{t.label}</span>
+          <CapEdit value={cap} onChange={setCap} />
+        </div>
+        <div style={{ marginTop: 10, display: "flex", alignItems: "baseline", gap: 4 }}>
+          <span style={{ fontFamily: SERIF, fontSize: 29, fontWeight: 700, lineHeight: 1, color: remain < 0 ? C.clay : C.ink }}>{fmtNum(remain)}</span>
+          <span style={{ fontSize: 12, color: C.sub }}>일 남음</span>
+        </div>
+        <div style={{ fontSize: 11, color: C.sub, marginTop: 4 }}>= {dayText(remain)} · 사용 {fmtNum(used)}일 / 총 {cap}일</div>
+        <div style={{ height: 6, background: t.soft, borderRadius: 99, marginTop: 9, overflow: "hidden" }}>
+          <div style={{ width: `${pct}%`, height: "100%", background: t.color, transition: "width .4s" }} />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={cardStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: t.color }}>{t.label}</span>
+        <span style={{ fontSize: 10.5, color: C.sub, background: t.soft, padding: "2px 7px", borderRadius: 99 }}>발생 시</span>
+      </div>
+      <div style={{ marginTop: 10, display: "flex", alignItems: "baseline", gap: 4 }}>
+        <span style={{ fontFamily: SERIF, fontSize: 29, fontWeight: 700, lineHeight: 1 }}>{fmtNum(used)}</span>
+        <span style={{ fontSize: 12, color: C.sub }}>일 사용</span>
+      </div>
+      <div style={{ fontSize: 11, color: C.sub, marginTop: 4 }}>누적 {dayText(used)}</div>
+      <div style={{ height: 6, background: t.soft, borderRadius: 99, marginTop: 9 }} />
+    </div>
+  );
+}
+function FlexCard({ acc, use, bal }) {
+  return (
+    <div style={{ ...cardStyle, background: bal >= 0 ? "#13312A" : "#3a1410", color: "#fff", borderColor: "transparent" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: "#9FD6C4" }}>탄력근무</span>
+        <span style={{ fontSize: 10.5, color: "#cfe9e0", background: "rgba(255,255,255,.1)", padding: "2px 7px", borderRadius: 99 }}>적립−사용</span>
+      </div>
+      <div style={{ marginTop: 10, display: "flex", alignItems: "baseline", gap: 5 }}>
+        <span style={{ fontFamily: SERIF, fontSize: 29, fontWeight: 700, lineHeight: 1 }}>{minToHM(bal)}</span>
+        <span style={{ fontSize: 12, color: "#cfe9e0" }}>잔여</span>
+      </div>
+      <div style={{ fontSize: 11, color: "#bcd9cf", marginTop: 4 }}>= {minToText(bal)}</div>
+      <div style={{ display: "flex", gap: 14, marginTop: 9, fontSize: 11 }}>
+        <span style={{ color: "#9FD6C4" }}>적립 {minToHM(acc)}</span>
+        <span style={{ color: "#e6b3a6" }}>사용 {minToHM(use)}</span>
+      </div>
+    </div>
+  );
+}
+function CapEdit({ value, onChange }) {
+  const [edit, setEdit] = useState(false);
+  if (edit)
+    return (
+      <input type="number" autoFocus value={value} min={0}
+        onChange={(e) => onChange(Number(e.target.value))}
+        onBlur={() => setEdit(false)}
+        onKeyDown={(e) => e.key === "Enter" && setEdit(false)}
+        style={{ width: 52, padding: "1px 5px", border: `1px solid ${C.line}`, borderRadius: 6, fontSize: 12, textAlign: "right" }} />
+    );
+  return (
+    <button onClick={() => setEdit(true)} title="총 일수 수정" style={{ fontSize: 10.5, color: C.sub, background: "#F2EDE2", border: "none", padding: "3px 7px", borderRadius: 99, cursor: "pointer" }}>총 {value}일 ✎</button>
+  );
+}
+const cardStyle = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: "14px 15px", boxShadow: "0 1px 2px rgba(43,38,32,.04)" };
+
+/* ============================ 휴가 섹션 ============================ */
+function LeaveSection({ data, usedByType, addLeave, delLeave }) {
+  const [type, setType] = useState("annual");
+  const [date, setDate] = useState(todayISO());
+  const [days, setDays] = useState(0.25);
+  const [customH, setCustomH] = useState("");
+  const [note, setNote] = useState("");
+  const [filter, setFilter] = useState("all");
+  const capped = LEAVE_TYPES[type].capped;
+
+  const submit = () => {
+    let d = days;
+    if (customH !== "" && !Number.isNaN(Number(customH))) d = capped ? Number(customH) / 8 : Number(customH);
+    if (!date || !d || d <= 0) return;
+    addLeave({ type, date, days: Math.round(d * 100) / 100, note: note.trim() });
+    setNote(""); setCustomH("");
+  };
+  const rows = data.leave.filter((r) => filter === "all" || r.type === filter);
+
+  return (
+    <div>
+      <div style={{ ...panel, marginTop: 18 }}>
+        <div className="lm-form">
+          <Field label="종류">
+            <select value={type} onChange={(e) => { setType(e.target.value); setCustomH(""); }} style={selStyle}>
+              {LEAVE_ORDER.map((k) => <option key={k} value={k}>{LEAVE_TYPES[k].label}</option>)}
+            </select>
+          </Field>
+          <Field label="날짜"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={selStyle} /></Field>
+          {capped ? (
+            <>
+              <Field label="사용량">
+                <div className="lm-chiprow" style={{ display: "flex", gap: 5 }}>
+                  {[["2시간", 0.25], ["4시간", 0.5], ["종일", 1]].map(([lab, v]) => (
+                    <button key={v} onClick={() => { setDays(v); setCustomH(""); }} style={{ ...chip, ...(customH === "" && days === v ? chipOn : {}) }}>{lab}</button>
+                  ))}
+                </div>
+              </Field>
+              <Field label="직접(시간)"><input type="number" step="1" min="0" placeholder="예: 6" value={customH} onChange={(e) => setCustomH(e.target.value)} style={{ ...selStyle, width: 96 }} /></Field>
+            </>
+          ) : (
+            <Field label="일수"><input type="number" step="0.5" min="0" placeholder="예: 4 (4일)" value={customH} onChange={(e) => setCustomH(e.target.value)} style={{ ...selStyle, width: 110 }} /></Field>
+          )}
+          <Field label="비고 / 사유" grow><input value={note} onChange={(e) => setNote(e.target.value)} placeholder={capped ? "(선택)" : "예: 배우자 출산휴가"} style={{ ...selStyle, width: "100%" }} /></Field>
+          <button className="lm-add" onClick={submit} style={addBtn}>＋ 기록</button>
+        </div>
+        <p style={{ margin: "10px 2px 0", fontSize: 11, color: C.sub }}>
+          {capped ? "버튼은 2/4/8시간(종일=8h=1일). 그 외 시간은 ‘직접(시간)’에 입력." : "공가·특별휴가는 상한 없이 누적됩니다. 일수로 입력하세요(예: 4일)."}
+        </p>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
+        <button onClick={() => setFilter("all")} style={{ ...fchip, ...(filter === "all" ? fchipOn : {}) }}>전체 {data.leave.length}</button>
+        {LEAVE_ORDER.map((k) => (
+          <button key={k} onClick={() => setFilter(k)} style={{ ...fchip, ...(filter === k ? { ...fchipOn, background: LEAVE_TYPES[k].color } : {}) }}>
+            {LEAVE_TYPES[k].label} {fmtNum(usedByType[k] || 0)}일
+          </button>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        {rows.length === 0 ? <Empty>아직 기록이 없습니다. 위에서 휴가를 추가해 보세요.</Empty> : (
+          <div style={listWrap}>
+            {[...rows].reverse().map((r) => {
+              const t = LEAVE_TYPES[r.type];
+              return (
+                <div key={r.id} className="lm-row">
+                  <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(r.date)}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: t.color, background: t.soft, padding: "3px 9px", borderRadius: 99, textAlign: "center", whiteSpace: "nowrap" }}>{t.label}</span>
+                  <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 14, minWidth: 78 }}>{dayText(r.days)}</span>
+                  <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{r.note}</span>
+                  <button onClick={() => delLeave(r.id)} style={delBtn}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ 탄력 섹션 ============================ */
+function FlexSection({ data, addFlex, delFlex, bal }) {
+  const [kind, setKind] = useState("적립");
+  const [date, setDate] = useState(todayISO());
+  const [reason, setReason] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const autoMin = diffMin(from, to);
+
+  const submit = () => {
+    if (!date || autoMin <= 0) return;
+    addFlex({ kind, date, reason: reason.trim(), from, to, min: autoMin });
+    setReason(""); setFrom(""); setTo("");
+  };
+
+  const ordered = [...data.flex].sort(sortByDate);
+  let run = 0;
+  const withRun = ordered.map((f) => { run += f.kind === "적립" ? f.min : -f.min; return { ...f, run }; });
+
+  return (
+    <div>
+      <div style={{ ...panel, marginTop: 18 }}>
+        <div className="lm-form">
+          <Field label="구분">
+            <div className="lm-chiprow" style={{ display: "flex", gap: 5 }}>
+              {["적립", "사용"].map((k) => (
+                <button key={k} onClick={() => setKind(k)} style={{ ...chip, ...(kind === k ? { ...chipOn, background: k === "적립" ? C.green : C.clay } : {}) }}>
+                  {k === "적립" ? "＋ 발생" : "－ 사용"}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <Field label={kind === "적립" ? "발생일" : "사용일"}><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={selStyle} /></Field>
+          <Field label="부터"><input type="time" value={from} onChange={(e) => setFrom(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
+          <Field label="까지"><input type="time" value={to} onChange={(e) => setTo(e.target.value)} step="600" style={{ ...selStyle, width: 120 }} /></Field>
+          <Field label="소요시간"><div className="lm-fill" style={{ ...selStyle, minWidth: 64, fontFamily: SERIF, fontWeight: 700, color: autoMin > 0 ? C.ink : C.sub, background: "#F7F3EA" }}>{autoMin > 0 ? minToHM(autoMin) : "0:00"}</div></Field>
+          <Field label="사유" grow><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="예: 회장단 회의 / 권익옹호위원회 정기회의" style={{ ...selStyle, width: "100%" }} /></Field>
+          <button className="lm-add" onClick={submit} style={{ ...addBtn, background: kind === "적립" ? C.green : C.clay }}>＋ 등록</button>
+        </div>
+        <p style={{ margin: "10px 2px 0", fontSize: 11, color: C.sub }}>
+          현재 잔여 <b style={{ color: bal >= 0 ? C.green : C.clay }}>{minToHM(bal)}</b> ({minToText(bal)}). 회의·촬영 등 초과근무는 ‘발생’, 늦은 출근·이른 퇴근은 ‘사용’.
+        </p>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        {withRun.length === 0 ? <Empty>탄력근무 기록이 없습니다.</Empty> : (
+          <div style={listWrap}>
+            <div className="lm-row lm-thead" style={{ fontSize: 11, color: C.sub, fontWeight: 700, background: "#FBF8F1" }}>
+              <span style={{ width: 46 }}>일자</span>
+              <span style={{ width: 56, textAlign: "center" }}>구분</span>
+              <span style={{ width: 92 }}>시간</span>
+              <span style={{ flex: 1 }}>사유</span>
+              <span style={{ width: 64, textAlign: "right" }}>잔여</span>
+              <span style={{ width: 24 }} />
+            </div>
+            {[...withRun].reverse().map((f) => (
+              <div key={f.id} className="lm-row">
+                <span style={{ fontFamily: SERIF, fontSize: 14, minWidth: 46, color: C.sub }}>{fmtDate(f.date)}</span>
+                <span style={{ minWidth: 50, textAlign: "center", fontSize: 11, fontWeight: 700, color: f.kind === "적립" ? C.green : C.clay }}>{f.kind === "적립" ? "＋적립" : "－사용"}</span>
+                <span style={{ minWidth: 88, fontSize: 12, color: C.sub }}>
+                  <b style={{ fontFamily: SERIF, color: C.ink }}>{minToHM(f.min)}</b>
+                  {f.from && <span className="lm-hidemob" style={{ fontSize: 10, marginLeft: 5 }}>{f.from}~{f.to}</span>}
+                </span>
+                <span className="lm-note" style={{ fontSize: 12.5, color: C.sub }}>{f.reason}</span>
+                <span style={{ minWidth: 56, marginLeft: "auto", textAlign: "right", fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: f.run < 0 ? C.clay : C.ink }}>{minToHM(f.run)}</span>
+                <button onClick={() => delFlex(f.id)} style={delBtn}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================ 작은 컴포넌트 ============================ */
+function Field({ label, children, grow }) {
+  return (
+    <label className="lm-field" style={{ display: "flex", flexDirection: "column", gap: 5, flex: grow ? "1 1 200px" : "0 0 auto", minWidth: 0 }}>
+      <span style={{ fontSize: 11, color: C.sub, fontWeight: 600 }}>{label}</span>
+      {children}
+    </label>
+  );
+}
+function TabBtn({ active, children, onClick }) {
+  return (
+    <button onClick={onClick} style={{ padding: "10px 16px", border: "none", background: "transparent", cursor: "pointer", fontSize: 14, fontWeight: active ? 800 : 600, color: active ? C.ink : C.sub, borderBottom: `2.5px solid ${active ? C.clay : "transparent"}`, marginBottom: -1.5 }}>{children}</button>
+  );
+}
+function Empty({ children }) {
+  return <div style={{ ...panel, textAlign: "center", color: C.sub, fontSize: 13, padding: "30px 16px" }}>{children}</div>;
+}
+function Footer({ onReset }) {
+  return (
+    <div style={{ marginTop: 30, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, fontSize: 11.5, color: C.sub, flexWrap: "wrap" }}>
+      <span>8시간 = 1일 · 탄력근무 10분 단위</span>
+      <button onClick={onReset} style={{ background: "none", border: `1px solid ${C.line}`, color: C.sub, padding: "5px 11px", borderRadius: 8, cursor: "pointer", fontSize: 11.5 }}>전체 초기화</button>
+    </div>
+  );
+}
+
+/* ============================ 스타일 ============================ */
+const panel = { background: C.card, border: `1px solid ${C.line}`, borderRadius: 14, padding: 16, boxShadow: "0 1px 2px rgba(43,38,32,.04)" };
+const selStyle = { padding: "8px 10px", border: `1px solid ${C.line}`, borderRadius: 9, background: C.card, fontSize: 14, color: C.ink, outline: "none" };
+const chip = { padding: "8px 11px", border: `1px solid ${C.line}`, borderRadius: 9, background: C.card, fontSize: 13, color: C.sub, cursor: "pointer", fontWeight: 600 };
+const chipOn = { background: C.green, color: "#fff", borderColor: "transparent" };
+const addBtn = { padding: "9px 16px", border: "none", borderRadius: 9, background: C.clay, color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" };
+const fchip = { padding: "6px 11px", border: `1px solid ${C.line}`, borderRadius: 99, background: C.card, fontSize: 12, color: C.sub, cursor: "pointer", fontWeight: 600 };
+const fchipOn = { background: C.ink, color: "#fff", borderColor: "transparent" };
+const listWrap = { border: `1px solid ${C.line}`, borderRadius: 12, overflow: "hidden", background: C.card };
+const delBtn = { width: 24, height: 24, borderRadius: 7, border: "none", background: "#F2EDE2", color: C.sub, cursor: "pointer", fontSize: 12, flexShrink: 0 };

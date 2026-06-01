@@ -1,0 +1,66 @@
+# 2026 개인 휴가·탄력 관리
+
+개인 연차·가족돌봄휴가·장기근속휴가·공가·특별휴가와 탄력근무 잔여를 관리하는 모바일 반응형 웹앱입니다. (React + Vite)
+
+- **연차 20일 / 가족돌봄 3일 / 장기근속 10일** — 2/4/8시간(8시간=1일) 단위로 차감, 잔여 자동 계산
+- **공가 / 특별휴가** — 상한 없이 누적 기록
+- **탄력근무** — 발생(적립) → 사용(차감), 잔여 시간을 누적 관리 (10분 단위)
+- 기록은 브라우저(`localStorage`)에 자동 저장 — **기기·브라우저별로** 보관됩니다.
+
+## 로컬에서 실행
+
+```bash
+npm install
+npm run dev          # http://localhost:5173
+npm run build        # dist/ 생성 (배포 결과물)
+npm run preview      # 빌드 결과 미리보기
+```
+
+Node.js 18 이상 권장.
+
+## GitHub에 올리기
+
+```bash
+git init
+git add .
+git commit -m "휴가·탄력 관리 앱"
+git branch -M main
+git remote add origin https://github.com/<사용자명>/<저장소명>.git
+git push -u origin main
+```
+
+## Vercel 배포
+
+1. [vercel.com](https://vercel.com) 로그인 → **Add New… → Project**
+2. 방금 올린 GitHub 저장소를 **Import**
+3. Framework Preset 가 **Vite** 로 자동 인식됨 (그대로 두기)
+   - Build Command: `npm run build`
+   - Output Directory: `dist`
+   - 별도 환경변수 없음
+4. **Deploy** 클릭 → 잠시 후 `https://<프로젝트>.vercel.app` 주소 발급
+
+이후 `main` 브랜치에 push 할 때마다 자동으로 재배포됩니다.
+
+## 참고
+
+- 기본값은 **이 기기의 브라우저(`localStorage`)** 저장입니다.
+- 아래 스프레드시트 연동을 설정하면 Google 시트에 함께 저장되어, 다른 기기와 공유·백업할 수 있습니다.
+
+## Google 스프레드시트에 저장 (선택)
+
+서버 없이 Google Apps Script 웹앱을 백엔드로 사용합니다.
+
+1. 새 Google 스프레드시트를 만든다.
+2. **확장 프로그램 → Apps Script** → 기본 코드를 지우고 `google-apps-script.gs` 내용을 붙여넣고 저장.
+3. **배포 → 새 배포 → 웹 앱**
+   - 실행 권한: **나**
+   - 액세스 권한: **모든 사용자** (반드시)
+4. 발급된 `https://script.google.com/macros/s/…/exec` URL을 복사.
+5. 앱 상단 **＋ 스프레드시트에 저장하기**를 열고 URL을 붙여넣어 **연결**.
+   - 이 프로젝트에는 기본 연동 주소가 이미 들어 있어, 앱을 열면 자동으로 연결을 시도합니다(`src/App.jsx`의 `DEFAULT_SHEET_URL`). 다른 시트를 쓰려면 그 값을 바꾸거나 앱 화면에서 변경하세요.
+
+- `연차` `탄력` `설정` 세 시트가 자동 생성되며, 사람이 읽을 수 있는 형태로 기록됩니다.
+- 휴대폰·PC에서 **같은 URL**로 연결하면 기록이 공유됩니다.
+- 인터넷이 끊겨도 기기에 계속 저장되고, 다시 연결되면 동기화됩니다.
+- 동작 원리상 저장은 마지막 저장이 우선(전체 덮어쓰기)이므로, 여러 기기에서 **동시에** 편집하는 경우는 피하세요.
+

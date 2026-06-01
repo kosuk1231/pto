@@ -1,0 +1,121 @@
+@import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css");
+
+:root {
+  --paper: #f6f2e9;
+  --card: #ffffff;
+  --ink: #2b2620;
+  --sub: #7a7164;
+  --line: #e7dfcf;
+  --green: #1f6b57;
+  --green-soft: #e5f0ec;
+  --clay: #b5452f;
+  --clay-soft: #f4e4de;
+  --gold: #a8842c;
+  --blue: #34607a;
+  --blue-soft: #e3ecf1;
+  --serif: "Iowan Old Style", "Apple SD Gothic Neo", Georgia, "Times New Roman", serif;
+  --sans: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo",
+    "Malgun Gothic", "Noto Sans KR", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+input,
+select,
+button,
+textarea {
+  font-family: inherit;
+  font-size: 16px; /* iOS zoom 방지 */
+}
+
+/* ---- layout ---- */
+.lm-wrap {
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 0 16px 64px;
+}
+.lm-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+.lm-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: flex-end;
+}
+.lm-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.lm-note {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- mobile ---- */
+@media (max-width: 640px) {
+  .lm-wrap {
+    padding: 0 12px 56px;
+  }
+  .lm-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .lm-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .lm-field {
+    width: 100% !important;
+    flex: none !important;
+  }
+  .lm-form input,
+  .lm-form select,
+  .lm-fill {
+    width: 100% !important;
+  }
+  .lm-chiprow {
+    flex-wrap: wrap;
+  }
+  .lm-add {
+    width: 100%;
+  }
+  .lm-thead {
+    display: none !important;
+  }
+  .lm-hidemob {
+    display: none !important;
+  }
+  .lm-row {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .lm-note {
+    flex-basis: 100%;
+    order: 9;
+    white-space: normal;
+    overflow: visible;
+  }
+}
