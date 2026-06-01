@@ -118,4 +118,16 @@ textarea {
     white-space: normal;
     overflow: visible;
   }
+  /* 발생↔사용 좌우 → 위아래로 */
+  .lm-match {
+    flex-direction: column !important;
+  }
+  .lm-match-l {
+    width: 100% !important;
+    border-right: none !important;
+    border-bottom: 1px solid var(--line);
+  }
+  .lm-matchhead span:last-child {
+    display: none;
+  }
 }

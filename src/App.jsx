@@ -534,14 +534,21 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
     setReason(""); setSelected([]); setUseMin(""); reasonTouched.current = false;
   };
 
-  // 목록(누적 잔여 표시)
-  const ordered = [...data.flex].sort(sortByDate);
-  let run = 0;
-  const withRun = ordered.map((f) => {
-    const amt = f.kind === "적립" ? f.min : (f.links ? f.links.reduce((a, l) => a + (l.min || 0), 0) : f.min);
-    run += f.kind === "적립" ? amt : -amt;
-    return { ...f, _amt: amt, run };
+  // ── 발생↔사용 매칭 데이터 ──
+  const usesByEarn = {};      // earnId → [{use, min}]
+  const orphanUses = [];      // 어느 발생에도 연결 안 된 사용(레거시)
+  data.flex.filter((f) => f.kind === "사용").forEach((u) => {
+    const ls = u.links || [];
+    if (ls.length === 0) { orphanUses.push(u); return; }
+    ls.forEach((l) => {
+      if (!usesByEarn[l.id]) usesByEarn[l.id] = [];
+      usesByEarn[l.id].push({ use: u, min: l.min || 0 });
+    });
   });
+  // 발생 목록(최신순), 잔여 있는 것 먼저
+  const earnsDesc = [...earns].sort((a, b) => sortByDate(b, a));
+  const openList = earnsDesc.filter((f) => remainOf(f) > 0);
+  const doneList = earnsDesc.filter((f) => remainOf(f) <= 0);
 
   return (
     <div>
@@ -594,37 +601,107 @@ function FlexSection({ data, addFlex, delFlex, bal, usedMap, updateFlex }) {
       </div>
 
       <div style={{ marginTop: 16 }}>
-        {withRun.length === 0 ? <Empty>탄력근무 기록이 없습니다.</Empty> : (
-          <div style={listWrap}>
-            <div className="lm-row lm-thead" style={{ fontSize: 11, color: C.sub, fontWeight: 700, background: "#FBF8F1" }}>
-              <span style={{ width: 46 }}>일자</span>
-              <span style={{ width: 56, textAlign: "center" }}>구분</span>
-              <span style={{ width: 92 }}>시간</span>
-              <span style={{ flex: 1 }}>사유</span>
-              <span style={{ width: 64, textAlign: "right" }}>잔여</span>
-              <span style={{ width: 24 }} />
+        {earns.length === 0 && orphanUses.length === 0 ? (
+          <Empty>탄력근무 기록이 없습니다. ‘발생’으로 적립부터 해보세요.</Empty>
+        ) : (
+          <>
+            {/* 헤더 */}
+            <div className="lm-matchhead" style={{ display: "flex", gap: 10, padding: "0 4px 8px", fontSize: 11, color: C.sub, fontWeight: 700 }}>
+              <span style={{ flex: "0 0 auto", width: "46%" }}>발생 (적립)</span>
+              <span style={{ flex: 1 }}>→ 사용 내역</span>
             </div>
-            {[...withRun].reverse().map((f) => {
-              const isEarn = f.kind === "적립";
-              const rem = isEarn ? remainOf(f) : null;
-              return (
-                <div key={f.id} className="lm-row">
-                  <DateCell value={f.date} onChange={(v) => updateFlex(f.id, { date: v })} />
-                  <span style={{ minWidth: 50, textAlign: "center", fontSize: 11, fontWeight: 700, color: isEarn ? C.green : C.clay }}>{isEarn ? "＋적립" : "－사용"}</span>
-                  <span style={{ minWidth: 88, fontSize: 12, color: C.sub }}>
-                    <b style={{ fontFamily: SERIF, color: C.ink }}>{minToHM(f._amt)}</b>
-                    {isEarn && f.from && <span className="lm-hidemob" style={{ fontSize: 10, marginLeft: 5 }}>{f.from}~{f.to}</span>}
-                    {isEarn && rem < f.min && <span style={{ fontSize: 10, marginLeft: 5, color: rem > 0 ? C.green : C.sub }}>잔여 {minToHM(rem)}</span>}
-                  </span>
-                  <TextCell value={f.reason} onChange={(v) => updateFlex(f.id, { reason: v })} placeholder="사유 입력" />
-                  <span style={{ minWidth: 56, marginLeft: "auto", textAlign: "right", fontFamily: SERIF, fontWeight: 700, fontSize: 13, color: f.run < 0 ? C.clay : C.ink }}>{minToHM(f.run)}</span>
-                  <button onClick={() => delFlex(f.id)} style={delBtn}>✕</button>
-                </div>
-              );
-            })}
-          </div>
+
+            {/* 잔여 있는 발생 */}
+            {openList.map((f) => (
+              <EarnRow key={f.id} f={f} remain={remainOf(f)} uses={usesByEarn[f.id] || []} updateFlex={updateFlex} delFlex={delFlex} defaultOpen />
+            ))}
+
+            {/* 완료(잔여 0) 발생 — 접어두기 */}
+            {doneList.length > 0 && (
+              <DoneFold count={doneList.length}>
+                {doneList.map((f) => (
+                  <EarnRow key={f.id} f={f} remain={remainOf(f)} uses={usesByEarn[f.id] || []} updateFlex={updateFlex} delFlex={delFlex} />
+                ))}
+              </DoneFold>
+            )}
+
+            {/* 미연결 사용(레거시) */}
+            {orphanUses.length > 0 && (
+              <div style={{ ...listWrap, marginTop: 12, borderColor: C.claySoft }}>
+                <div style={{ padding: "8px 14px", fontSize: 11, fontWeight: 700, color: C.clay, background: C.claySoft }}>발생과 연결되지 않은 사용 {orphanUses.length}건 (예전 방식 기록)</div>
+                {[...orphanUses].sort((a, b) => sortByDate(b, a)).map((u) => (
+                  <div key={u.id} className="lm-row">
+                    <DateCell value={u.date} onChange={(v) => updateFlex(u.id, { date: v })} />
+                    <span style={{ minWidth: 44, fontSize: 11, fontWeight: 700, color: C.clay }}>－사용</span>
+                    <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 13, minWidth: 52 }}>{minToHM(u.min)}</span>
+                    <TextCell value={u.reason} onChange={(v) => updateFlex(u.id, { reason: v })} placeholder="사유 입력" />
+                    <button onClick={() => delFlex(u.id)} style={delBtn}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+/* 발생 1건 + 그 발생에서 차감해 간 사용들을 좌우로 */
+function EarnRow({ f, remain, uses, updateFlex, delFlex, defaultOpen }) {
+  const done = remain <= 0;
+  const usedSum = uses.reduce((s, u) => s + u.min, 0);
+  return (
+    <div style={{ ...listWrap, marginBottom: 10, opacity: done ? 0.7 : 1 }}>
+      <div className="lm-match" style={{ display: "flex", gap: 0, alignItems: "stretch" }}>
+        {/* 왼쪽: 발생 */}
+        <div className="lm-match-l" style={{ flex: "0 0 auto", width: "46%", padding: "12px 14px", borderRight: `1px solid ${C.line}`, background: "#FBFAF6" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: C.green, background: C.greenSoft, padding: "2px 7px", borderRadius: 99 }}>＋적립</span>
+            <DateCell value={f.date} onChange={(v) => updateFlex(f.id, { date: v })} />
+            <span style={{ fontFamily: SERIF, fontWeight: 700, fontSize: 15, color: C.ink }}>{minToHM(f.min)}</span>
+            {f.from && <span className="lm-hidemob" style={{ fontSize: 10.5, color: C.sub }}>{f.from}~{f.to}</span>}
+            <button onClick={() => delFlex(f.id)} style={{ ...delBtn, marginLeft: "auto" }}>✕</button>
+          </div>
+          <div style={{ marginTop: 5 }}>
+            <TextCell value={f.reason} onChange={(v) => updateFlex(f.id, { reason: v })} placeholder="사유 입력" />
+          </div>
+          <div style={{ marginTop: 7, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: C.sub }}>사용 {minToHM(usedSum)}</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: done ? C.sub : C.green }}>
+              {done ? "✓ 소진" : `잔여 ${minToHM(remain)}`}
+            </span>
+          </div>
+        </div>
+
+        {/* 오른쪽: 사용들 */}
+        <div className="lm-match-r" style={{ flex: 1, padding: "8px 12px", display: "flex", flexDirection: "column", gap: 6, justifyContent: uses.length ? "flex-start" : "center" }}>
+          {uses.length === 0 ? (
+            <span style={{ fontSize: 12, color: C.sub }}>아직 사용 없음</span>
+          ) : (
+            [...uses].sort((a, b) => sortByDate(b.use, a.use)).map(({ use, min }, i) => (
+              <div key={use.id + i} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5 }}>
+                <span style={{ fontSize: 10.5, fontWeight: 700, color: C.clay, background: C.claySoft, padding: "2px 6px", borderRadius: 99, whiteSpace: "nowrap" }}>－{minToHM(min)}</span>
+                <span style={{ fontFamily: SERIF, fontSize: 13, color: C.sub, minWidth: 36 }}>{fmtDate(use.date)}</span>
+                <span style={{ color: C.ink, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{use.reason || "(사유 없음)"}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* 완료된 발생 접기/펼치기 */
+function DoneFold({ count, children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 4 }}>
+      <button onClick={() => setOpen((o) => !o)} style={{ width: "100%", textAlign: "left", background: "#F2EDE2", color: C.sub, border: "none", padding: "9px 14px", borderRadius: 10, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
+        {open ? "▾" : "▸"} 소진 완료된 발생 {count}건 {open ? "접기" : "펼치기"}
+      </button>
+      {open && <div style={{ marginTop: 10 }}>{children}</div>}
     </div>
   );
 }
